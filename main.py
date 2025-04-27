@@ -4,6 +4,12 @@ import matplotlib.pyplot as plt
 import os
 from datetime import datetime
 import asyncio
+import logging
+from aiogram.exceptions import TelegramConflictError
+from io import BytesIO
+from aiogram.types import BufferedInputFile
+from importlib.metadata import version as package_version, PackageNotFoundError
+import sys
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
@@ -14,6 +20,27 @@ from aiogram.utils.keyboard import ReplyKeyboardBuilder
 
 # Конфигурация
 from config import BOT_TOKEN, DB_NAME
+
+# Вывод версий пакетов
+def print_versions():
+    packages = ['aiogram', 'pandas', 'matplotlib', 'sqlite3']
+    print("====================================")
+    print("\n--- Версии используемых пакетов ---")
+    
+    for pkg in packages:
+        try:
+            if pkg == 'sqlite3':
+                print(f"sqlite3: {sqlite3.sqlite_version} (системная)")
+            else:
+                ver = package_version(pkg)
+                print(f"{pkg}: {ver}")
+        except PackageNotFoundError:
+            print(f"{pkg}: не установлен")
+    
+    print(f"Python: {sys.version.split()[0]}")
+    print("====================================\n")
+
+print_versions()
 
 # Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN)
@@ -159,14 +186,13 @@ async def cmd_list_records(message: Message):
         systolic, diastolic, pulse, comment, timestamp = record
         response += (
             f"🕒 {timestamp}\n"
-            f"🔺 {systolic} / 🔻 {diastolic}\n"
-            f"💓 Пульс: {pulse}\n"
-            f"📝 Комментарий: {comment if comment else '—'}\n\n"
+            f"{systolic} / {diastolic}\n"
+            f"Пульс: {pulse}\n"
+            f"Комментарий: {comment if comment else '—'}\n\n"
         )
 
     await message.answer(response)
 
-# График давления
 @dp.message(F.text == "📈 График давления")
 async def cmd_graph(message: Message):
     conn = sqlite3.connect(DB_NAME)
@@ -183,27 +209,34 @@ async def cmd_graph(message: Message):
         await message.answer("📭 У вас пока нет записей.")
         return
 
+    # Форматируем даты для графика
     dates = [datetime.strptime(record[0], "%Y-%m-%d %H:%M:%S") for record in records]
+    formatted_dates = [dt.strftime("%d.%m.%Y %H:%M") for dt in dates]
+    
     systolic = [record[1] for record in records]
     diastolic = [record[2] for record in records]
     pulse = [record[3] for record in records]
 
-    plt.figure(figsize=(10, 6))
-    plt.plot(dates, systolic, label="Верхнее (сист.)", marker="o")
-    plt.plot(dates, diastolic, label="Нижнее (диаст.)", marker="o")
-    plt.plot(dates, pulse, label="Пульс", linestyle="--", marker="x")
-    plt.xlabel("Дата")
-    plt.ylabel("Значение")
-    plt.title("Динамика давления и пульса")
-    plt.legend()
+    plt.figure(figsize=(12, 7))
+    plt.plot(formatted_dates, systolic, label="Верхнее (сист.)", marker="o")
+    plt.plot(formatted_dates, diastolic, label="Нижнее (диаст.)", marker="o")
+    plt.plot(formatted_dates, pulse, label="Пульс", linestyle="--", marker="x")
+    plt.xlabel("Дата и время", fontsize=12)
+    plt.ylabel("Значение", fontsize=12)
+    plt.title("Динамика давления и пульса", fontsize=14)
+    plt.legend(fontsize=10)
     plt.grid(True)
+    plt.xticks(rotation=45)
+    plt.tight_layout()
 
-    graph_file = "pressure_graph.png"
-    plt.savefig(graph_file)
-    await message.answer_photo(photo=open(graph_file, "rb"), caption="📈 Ваша динамика давления и пульса")
-    os.remove(graph_file)
+    img_buffer = BytesIO()
+    plt.savefig(img_buffer, format="png", dpi=300, bbox_inches="tight")
+    img_buffer.seek(0)
+    plt.close()
 
-# Экспорт в Excel
+    photo = BufferedInputFile(img_buffer.getvalue(), filename="pressure_graph.png")
+    await message.answer_photo(photo, caption="📈 Ваша динамика давления и пульса")
+
 @dp.message(F.text == "📤 Экспорт в Excel")
 async def cmd_export_excel(message: Message):
     conn = sqlite3.connect(DB_NAME)
@@ -220,25 +253,63 @@ async def cmd_export_excel(message: Message):
         await message.answer("📭 У вас пока нет записей.")
         return
 
-    df = pd.DataFrame(
-        records,
-        columns=["Дата", "Верхнее", "Нижнее", "Пульс", "Комментарий"]
-    )
-    excel_file = "pressure_data.xlsx"
-    df.to_excel(excel_file, index=False)
+    # Форматируем даты для Excel
+    formatted_records = []
+    for record in records:
+        dt = datetime.strptime(record[0], "%Y-%m-%d %H:%M:%S")
+        formatted_date = dt.strftime("%d.%m.%Y %H:%M")
+        formatted_records.append((formatted_date, *record[1:]))
 
-    await message.answer_document(open(excel_file, "rb"), caption="📊 Ваши данные в Excel")
-    os.remove(excel_file)
+    df = pd.DataFrame(
+        formatted_records,
+        columns=["Дата и время", "Верхнее", "Нижнее", "Пульс", "Комментарий"]
+    )
+
+    # Создаем имя файла с текущей датой и временем
+    current_time = datetime.now().strftime("%d_%m_%Y_%H_%M")
+    filename = f"pressure_data_{current_time}.xlsx"
+    
+    bio = BytesIO()
+    with pd.ExcelWriter(bio, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False)
+        
+        # Получаем объект листа для настройки
+        worksheet = writer.sheets['Sheet1']
+        
+        # Устанавливаем ширину столбцов
+        worksheet.column_dimensions['A'].width = 20  # Дата и время
+        worksheet.column_dimensions['B'].width = 10  # Верхнее
+        worksheet.column_dimensions['C'].width = 10  # Нижнее
+        worksheet.column_dimensions['D'].width = 10  # Пульс
+        worksheet.column_dimensions['E'].width = 30  # Комментарий
+    
+    bio.seek(0)
+
+    document = BufferedInputFile(bio.getvalue(), filename=filename)
+    await message.answer_document(document, caption=f"📊 Ваши данные в Excel ({current_time.replace('_', '.')})")
 
 # Выход
 @dp.message(F.text == "🔒 Выход")
 async def cmd_logout(message: Message):
     await message.answer("🔒 Вы вышли из аккаунта.")
 
-# Запуск бота
+# Включаем логирование
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+
 async def main():
-    print("Бот запущен!")
-    await dp.start_polling(bot)
+    try:
+        logging.info("Бот запускается...")
+        await dp.start_polling(bot)
+    except TelegramConflictError:
+        logging.error("❌ Конфликт с другим экземпляром бота! Завершите другие процессы.")
+    except Exception as e:
+        logging.exception(f"❌ Неожиданная ошибка: {e}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("🛑 Бот остановлен вручную.")
