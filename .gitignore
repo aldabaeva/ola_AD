@@ -1,2 +1,14 @@
-﻿config.py
+﻿# Конфигурационный файл
+config.py
+
+# База данных
 *.db
+
+# Папка checks
+/checks/
+
+# Папка tests
+/tests/
+
+# Файл kill_python.bat
+kill_python.bat

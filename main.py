@@ -12,7 +12,7 @@ from importlib.metadata import version as package_version, PackageNotFoundError
 import sys
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -97,7 +97,7 @@ async def handle_contact(message: Message):
 # Главное меню
 async def show_main_menu(message: Message):
     builder = ReplyKeyboardBuilder()
-    builder.row(KeyboardButton(text="➕ Добавить запись"))
+    builder.row(KeyboardButton(text="💚 Добавить запись"))
     builder.row(
         KeyboardButton(text="📋 Последние записи"),
         KeyboardButton(text="📈 График давления")
@@ -110,7 +110,7 @@ async def show_main_menu(message: Message):
     await message.answer("📊 Выберите действие:", reply_markup=builder.as_markup(resize_keyboard=True))
 
 # Добавление записи
-@dp.message(F.text == "➕ Добавить запись")
+@dp.message(F.text == "💚 Добавить запись")
 async def cmd_add_record(message: Message, state: FSMContext):
     await state.set_state(PressureStates.waiting_for_systolic)
     await message.answer("Введите верхнее давление (систолическое):")
@@ -135,21 +135,43 @@ async def process_diastolic(message: Message, state: FSMContext):
     except ValueError:
         await message.answer("❌ Введите число!")
 
+# Переход к шагу ввода комментария
 @dp.message(PressureStates.waiting_for_pulse)
 async def process_pulse(message: Message, state: FSMContext):
     try:
         pulse = int(message.text)
         await state.update_data(pulse=pulse)
+
+        # Создаем клавиатуру с кнопкой "Не заполнять комментарий"
+        builder = ReplyKeyboardBuilder()
+        builder.add(KeyboardButton(text="Не заполнять комментарий"))
+        builder.adjust(1)  # Кнопка будет одна в строке
+
         await state.set_state(PressureStates.waiting_for_comment)
-        await message.answer("Добавьте комментарий (или напишите /skip):")
+        await message.answer(
+            "Добавьте комментарий (или нажмите кнопку ниже):",
+            reply_markup=builder.as_markup(resize_keyboard=True)
+        )
     except ValueError:
         await message.answer("❌ Введите число!")
 
 @dp.message(PressureStates.waiting_for_comment)
 async def process_comment(message: Message, state: FSMContext):
-    data = await state.get_data()
-    comment = message.text if message.text != "/skip" else None
+    # Создаем клавиатуру с кнопкой "Не заполнять комментарий"
+    builder = ReplyKeyboardBuilder()
+    builder.add(KeyboardButton(text="Не заполнять комментарий"))
+    builder.adjust(1)  # Кнопка будет одна в строке
 
+    # Если пользователь нажал кнопку "Не заполнять комментарий"
+    if message.text == "Не заполнять комментарий":
+        comment = None
+    else:
+        comment = message.text
+
+    # Получаем данные из FSM
+    data = await state.get_data()
+
+    # Сохраняем данные в базу данных
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
@@ -160,9 +182,14 @@ async def process_comment(message: Message, state: FSMContext):
     conn.commit()
     conn.close()
 
+    # Очищаем состояние и показываем главное меню
     await state.clear()
-    await message.answer("✅ Запись успешно сохранена!")
+    await message.answer(
+        "✅ Запись успешно сохранена!",
+        reply_markup=ReplyKeyboardRemove()  # Убираем клавиатуру
+    )
     await show_main_menu(message)
+
 
 # Последние записи
 @dp.message(F.text == "📋 Последние записи")
