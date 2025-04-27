@@ -1,9 +1,16 @@
-﻿import os
-import sqlite3
+﻿import sqlite3
+import sys
+import os
 
-# Определяем путь к корню проекта
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # Корень проекта
-DB_NAME = os.path.join(BASE_DIR, "data.db")  # Полный путь к базе данных
+# Добавляем путь к корневой директории проекта
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Импортируем конфигурацию из корня проекта
+try:
+    from config import DB_NAME
+except ImportError:
+    print("Ошибка: файл config.py не найден или не содержит DB_NAME.")
+    sys.exit(1)
 
 # Проверка существования файла базы данных
 if not os.path.exists(DB_NAME):
@@ -25,7 +32,9 @@ def check_and_create_tables():
         cursor.execute("""
             CREATE TABLE ad_users (
                 user_id INTEGER PRIMARY KEY,
-                phone TEXT NOT NULL
+                phone TEXT NOT NULL,
+                interface_version TEXT DEFAULT '1.0',
+                created_dt TEXT DEFAULT CURRENT_TIMESTAMP
             );
         """)
 

@@ -4,11 +4,13 @@ config.py
 # База данных
 *.db
 
-# Папка checks
-/checks/
+# Папка __pycache__
+__pycache__/
 
-# Папка tests
+# Папки
+/check/
 /tests/
+/logs/
 
 # Файл kill_python.bat
 kill_python.bat

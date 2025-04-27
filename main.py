@@ -1,4 +1,5 @@
-﻿import sqlite3
+﻿from logging.handlers import RotatingFileHandler
+import sqlite3
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
@@ -12,14 +13,14 @@ from importlib.metadata import version as package_version, PackageNotFoundError
 import sys
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, Chat, User
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 
 # Конфигурация
-from config import BOT_TOKEN, DB_NAME
+from config import BOT_TOKEN, DB_NAME, INTERFACE_VERSION, ADMIN_IDS
 
 # Вывод версий пакетов
 def print_versions():
@@ -53,14 +54,61 @@ class PressureStates(StatesGroup):
     waiting_for_pulse = State()
     waiting_for_comment = State()
 
-# Старт / регистрация
-@dp.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext):
+async def check_and_update_interface(message: Message):
+    """
+    Проверяет версию интерфейса пользователя и обновляет её при необходимости.
+    """
     user_id = message.from_user.id
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
-    cursor.execute("SELECT * FROM ad_users WHERE user_id = ?", (user_id,))
+    # Получаем текущую версию интерфейса пользователя
+    cursor.execute("SELECT interface_version FROM ad_users WHERE user_id = ?", (user_id,))
+    user = cursor.fetchone()
+    current_version = user[0] if user else None
+    latest_version = INTERFACE_VERSION
+
+    if current_version != latest_version:
+        # Обновляем версию интерфейса
+        cursor.execute(
+            "UPDATE ad_users SET interface_version = ? WHERE user_id = ?",
+            (latest_version, user_id)
+        )
+        conn.commit()
+
+        # Отправляем уведомление об обновлении
+        await message.answer(
+            "🔔 Важное обновление!\n\n"
+            "Мы обновили интерфейс бота. Теперь доступны новые функции и улучшенный дизайн."
+        )
+
+        # Показываем новое меню с кнопками "Начать" и "Что нового"
+        await show_update_menu(message)
+
+        conn.close()
+        return True  # Версия была обновлена
+    conn.close()
+    return False  # Версия актуальна
+
+# Старт / регистрация
+@dp.message(CommandStart())
+async def cmd_start(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+
+    # Флаг для предотвращения повторного вызова
+    is_update_notification_sent = getattr(cmd_start, "is_update_notification_sent", False)
+
+    # Очищаем старую клавиатуру
+    await message.answer(
+        "Обновление интерфейса...",
+        reply_markup=ReplyKeyboardRemove()  # Убираем старую клавиатуру
+    )
+    await asyncio.sleep(0.5)  # Небольшая задержка для лучшего UX
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT interface_version FROM ad_users WHERE user_id = ?", (user_id,))
     user = cursor.fetchone()
 
     if not user:
@@ -71,6 +119,32 @@ async def cmd_start(message: Message, state: FSMContext):
             reply_markup=builder.as_markup(resize_keyboard=True)
         )
     else:
+        # Проверяем версию интерфейса
+        current_version = user[0] if user else None
+        latest_version = INTERFACE_VERSION
+
+        if current_version != latest_version:
+            # Обновляем версию интерфейса
+            cursor.execute(
+                "UPDATE ad_users SET interface_version = ? WHERE user_id = ?",
+                (latest_version, user_id)
+            )
+            conn.commit()
+
+            # Отправляем уведомление об обновлении
+            await message.answer(
+                "🔔 Важное обновление!\n\n"
+                "Мы обновили интерфейс бота. Теперь доступны новые функции и улучшенный дизайн."
+            )
+
+            # Устанавливаем флаг, чтобы избежать повторного вызова
+            cmd_start.is_update_notification_sent = True
+
+            # Автоматически выполняем команду /start снова
+            await cmd_start(message, state)
+            return
+
+        # Показываем главное меню
         await show_main_menu(message)
 
     conn.close()
@@ -96,6 +170,7 @@ async def handle_contact(message: Message):
 
 # Главное меню
 async def show_main_menu(message: Message):
+    # Создаем новую клавиатуру
     builder = ReplyKeyboardBuilder()
     builder.row(KeyboardButton(text="💚 Добавить запись"))
     builder.row(
@@ -112,11 +187,19 @@ async def show_main_menu(message: Message):
 # Добавление записи
 @dp.message(F.text == "💚 Добавить запись")
 async def cmd_add_record(message: Message, state: FSMContext):
+    # Проверяем версию интерфейса
+    if await check_and_update_interface(message):
+        return  # Если версия обновлена, прекращаем выполнение
+    
     await state.set_state(PressureStates.waiting_for_systolic)
     await message.answer("Введите верхнее давление (систолическое):")
 
 @dp.message(PressureStates.waiting_for_systolic)
 async def process_systolic(message: Message, state: FSMContext):
+    # Проверяем версию интерфейса
+    if await check_and_update_interface(message):
+        return  # Если версия обновлена, прекращаем выполнение
+    
     try:
         systolic = int(message.text)
         await state.update_data(systolic=systolic)
@@ -127,6 +210,10 @@ async def process_systolic(message: Message, state: FSMContext):
 
 @dp.message(PressureStates.waiting_for_diastolic)
 async def process_diastolic(message: Message, state: FSMContext):
+    # Проверяем версию интерфейса
+    if await check_and_update_interface(message):
+        return  # Если версия обновлена, прекращаем выполнение
+    
     try:
         diastolic = int(message.text)
         await state.update_data(diastolic=diastolic)
@@ -138,6 +225,10 @@ async def process_diastolic(message: Message, state: FSMContext):
 # Переход к шагу ввода комментария
 @dp.message(PressureStates.waiting_for_pulse)
 async def process_pulse(message: Message, state: FSMContext):
+    # Проверяем версию интерфейса
+    if await check_and_update_interface(message):
+        return  # Если версия обновлена, прекращаем выполнение
+    
     try:
         pulse = int(message.text)
         await state.update_data(pulse=pulse)
@@ -157,6 +248,10 @@ async def process_pulse(message: Message, state: FSMContext):
 
 @dp.message(PressureStates.waiting_for_comment)
 async def process_comment(message: Message, state: FSMContext):
+    # Проверяем версию интерфейса
+    if await check_and_update_interface(message):
+        return  # Если версия обновлена, прекращаем выполнение
+    
     # Создаем клавиатуру с кнопкой "Не заполнять комментарий"
     builder = ReplyKeyboardBuilder()
     builder.add(KeyboardButton(text="Не заполнять комментарий"))
@@ -190,10 +285,13 @@ async def process_comment(message: Message, state: FSMContext):
     )
     await show_main_menu(message)
 
-
 # Последние записи
 @dp.message(F.text == "📋 Последние записи")
 async def cmd_list_records(message: Message):
+    # Проверяем версию интерфейса
+    if await check_and_update_interface(message):
+        return  # Если версия обновлена, прекращаем выполнение
+    
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
@@ -222,6 +320,10 @@ async def cmd_list_records(message: Message):
 
 @dp.message(F.text == "📈 График давления")
 async def cmd_graph(message: Message):
+    # Проверяем версию интерфейса
+    if await check_and_update_interface(message):
+        return  # Если версия обновлена, прекращаем выполнение
+    
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
@@ -266,6 +368,10 @@ async def cmd_graph(message: Message):
 
 @dp.message(F.text == "📤 Экспорт в Excel")
 async def cmd_export_excel(message: Message):
+    # Проверяем версию интерфейса
+    if await check_and_update_interface(message):
+        return  # Если версия обновлена, прекращаем выполнение
+    
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
@@ -315,6 +421,116 @@ async def cmd_export_excel(message: Message):
     document = BufferedInputFile(bio.getvalue(), filename=filename)
     await message.answer_document(document, caption=f"📊 Ваши данные в Excel ({current_time.replace('_', '.')})")
 
+@dp.message(F.text == "🟢 Начать")
+async def cmd_start_after_update(message: Message, state: FSMContext):
+    """
+    Обработчик кнопки "Начать".
+    """
+    await cmd_start(message, state)
+
+@dp.message(F.text == "Что обновили?")
+async def cmd_whats_new(message: Message):
+    """
+    Обработчик кнопки "Что обновили?".
+    """
+    await message.answer(
+        "Вот что нового в этом обновлении:\n\n"
+        "- 🆕 Добавлены новые иконки в интерфейсе.\n"
+        "- 🔄 Улучшен дизайн главного меню.\n"
+        "- 💬 Добавлены подсказки для удобства использования.\n"
+        "- ⚡ Ускорена работа бота."
+        "v1.1.1"
+    )
+
+
+async def show_update_menu(message: Message):
+    """
+    Показывает меню с двумя кнопками после уведомления об обновлении.
+    """
+    reply_markup = ReplyKeyboardBuilder()
+    reply_markup.row(
+        KeyboardButton(text="🟢 Начать"),
+        KeyboardButton(text="Что обновили?")
+    )
+    await message.answer(
+        "Выберите действие:",
+        reply_markup=reply_markup.as_markup(resize_keyboard=True)
+    )
+
+async def update_all_users_interface_version():
+    """
+    Обновляет версию интерфейса для всех пользователей в базе данных.
+    """
+    latest_version = INTERFACE_VERSION
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    try:
+        # Обновляем версию интерфейса для всех пользователей
+        cursor.execute(
+            "UPDATE ad_users SET interface_version = ?",
+            (latest_version,)
+        )
+        conn.commit()
+        print(f"Версия интерфейса успешно обновлена до {latest_version} для всех пользователей.")
+    except Exception as e:
+        print(f"Ошибка при обновлении версии интерфейса: {e}")
+    finally:
+        conn.close()
+
+async def notify_all_users_about_update():
+    """
+    Отправляет уведомление всем пользователям о новой версии интерфейса.
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    try:
+        # Получаем список всех пользователей
+        cursor.execute("SELECT user_id FROM ad_users")
+        users = cursor.fetchall()
+
+        for user in users:
+            user_id = user[0]
+            try:
+                await bot.send_message(
+                    chat_id=user_id,
+                    text="🔔 Важное обновление!\n\n"
+                         "Мы обновили интерфейс бота. Теперь доступны новые функции и улучшенный дизайн."
+                )
+
+                # Показываем новое главное меню
+                await show_update_menu(Message(chat=Chat(id=user_id, type="private"), from_user=User(id=user_id, is_bot=False, first_name="User")))
+
+            except Exception as e:
+                logging.error(f"Не удалось отправить уведомление пользователю {user_id}: {e}")
+
+        print("Уведомления об обновлении успешно отправлены всем пользователям.")
+    except Exception as e:
+        print(f"Ошибка при отправке уведомлений: {e}")
+    finally:
+        conn.close()        
+
+@dp.message(Command("update_interface"))
+async def cmd_update(message: Message):
+    """
+    Команда для обновления версии интерфейса и уведомления всех пользователей.
+    """
+    user_id = message.from_user.id
+
+    # Проверяем, является ли пользователь администратором
+    if user_id not in ADMIN_IDS:  # ADMIN_IDS должен быть определен в config.py
+        await message.answer("❌ У вас нет прав для выполнения этой команды.")
+        return
+
+    await update_all_users_interface_version()
+
+    await notify_all_users_about_update()
+
+    # Отправляем подтверждение администратору
+    await message.answer("✅ Версия интерфейса успешно обновлена, и уведомления отправлены всем пользователям.")        
+
+
 # Выход
 @dp.message(F.text == "🔒 Выход")
 async def cmd_logout(message: Message):
@@ -326,14 +542,41 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 
+# Настройка логирования
+if not os.path.exists("logs"):
+    os.makedirs("logs")
+
+# Создаем логгер
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Обработчик для вывода логов в консоль
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+
+# Обработчик для записи логов в файл
+file_handler = RotatingFileHandler(
+    "logs/bot.log",
+    maxBytes=5 * 1024 * 1024,  # 5 МБ
+    backupCount=3,
+    encoding="utf-8"
+)
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+
+# Добавляем обработчики к логгеру
+logger.addHandler(console_handler)
+logger.addHandler(file_handler)
+
 async def main():
     try:
-        logging.info("Бот запускается...")
+        logger.info("Бот запускается...")
         await dp.start_polling(bot)
     except TelegramConflictError:
-        logging.error("❌ Конфликт с другим экземпляром бота! Завершите другие процессы.")
+        logger.error("❌ Конфликт с другим экземпляром бота! Завершите другие процессы.")
     except Exception as e:
-        logging.exception(f"❌ Неожиданная ошибка: {e}")
+        logger.exception(f"❌ Неожиданная ошибка: {e}")
 
 if __name__ == "__main__":
     try:
