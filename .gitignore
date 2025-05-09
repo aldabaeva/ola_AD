@@ -9,7 +9,6 @@ config.py
 __pycache__/
 
 # Папки
-/check/
 /tests/
 /logs/
 
