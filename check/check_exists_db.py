@@ -7,7 +7,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Импортируем конфигурацию из корня проекта
 try:
-    from config import DB_NAME
+    from db_config import DB_NAME
 except ImportError:
     print("Ошибка: файл config.py не найден или не содержит DB_NAME.")
     sys.exit(1)
