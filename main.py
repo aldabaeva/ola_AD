@@ -18,6 +18,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
+from check.check_exists_db import check_and_create_tables
 
 # Конфигурация
 from config import BOT_TOKEN, DB_NAME, INTERFACE_VERSION, ADMIN_IDS
@@ -42,6 +43,9 @@ def print_versions():
     print("====================================\n")
 
 print_versions()
+
+# Убедимся, что таблицы существуют при запуске
+check_and_create_tables()
 
 # Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN)

@@ -1,34 +1,31 @@
 ﻿import sqlite3
-import sys
 import os
+import logging
+from db_config import DB_NAME
 
-# Добавляем путь к корневой директории проекта
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Настройка логгера
+os.makedirs("logs", exist_ok=True)
+logging.basicConfig(
+    filename="logs/init.log",
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
 
-# Импортируем конфигурацию из корня проекта
-try:
-    from db_config import DB_NAME
-except ImportError:
-    print("Ошибка: файл config.py не найден или не содержит DB_NAME.")
-    sys.exit(1)
-
-# Проверка существования файла базы данных
-if not os.path.exists(DB_NAME):
-    print(f"База данных {DB_NAME} не найдена. Создаю новую...")
-    conn = sqlite3.connect(DB_NAME)  # Создаем файл в корне проекта
-    conn.close()
-
-# Проверка существования таблиц
 def check_and_create_tables():
+    logging.info("Проверка базы данных: %s", DB_NAME)
+
+    if not os.path.exists(DB_NAME):
+        logging.info("Файл базы данных не найден. Создаю: %s", DB_NAME)
+        conn = sqlite3.connect(DB_NAME)
+        conn.close()
+
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
-    # Проверка таблицы ad_users
+    # ad_users
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='ad_users';")
-    users_table_exists = cursor.fetchone() is not None
-
-    if not users_table_exists:
-        print("Создаю таблицу ad_users...")
+    if cursor.fetchone() is None:
+        logging.info("Создаю таблицу ad_users")
         cursor.execute("""
             CREATE TABLE ad_users (
                 user_id INTEGER PRIMARY KEY,
@@ -38,12 +35,10 @@ def check_and_create_tables():
             );
         """)
 
-    # Проверка таблицы ad_pressure_measurements
+    # ad_pressure_measurements
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='ad_pressure_measurements';")
-    measurements_table_exists = cursor.fetchone() is not None
-
-    if not measurements_table_exists:
-        print("Создаю таблицу ad_pressure_measurements...")
+    if cursor.fetchone() is None:
+        logging.info("Создаю таблицу ad_pressure_measurements")
         cursor.execute("""
             CREATE TABLE ad_pressure_measurements (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,7 +53,4 @@ def check_and_create_tables():
 
     conn.commit()
     conn.close()
-
-# Вызов функции проверки и создания таблиц
-check_and_create_tables()
-print("Проверка завершена. База данных готова к работе.")
+    logging.info("Проверка завершена. База данных готова.")
