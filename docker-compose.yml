@@ -2,6 +2,7 @@
 
 services:
   telegram-bot:
+    container_name: telegram-bot
     build: .
     restart: always
     env_file:
@@ -9,3 +10,5 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./database:/app/database
+    working_dir: /app
+    command: python main.py
