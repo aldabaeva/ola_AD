@@ -1,17 +1,18 @@
-﻿from logging.handlers import RotatingFileHandler
+﻿
 import sqlite3
 import pandas as pd
 import matplotlib.pyplot as plt
-import os
-from datetime import datetime
 import asyncio
 import logging
+import os
+import sys
+
+from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from aiogram.exceptions import TelegramConflictError
 from io import BytesIO
 from aiogram.types import BufferedInputFile
 from importlib.metadata import version as package_version, PackageNotFoundError
-import sys
-
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, Chat, User
 from aiogram.filters import Command, CommandStart
@@ -21,7 +22,8 @@ from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from check.check_exists_db import check_and_create_tables
 
 # Конфигурация
-from config import BOT_TOKEN, DB_NAME, INTERFACE_VERSION, ADMIN_IDS
+from config import BOT_TOKEN, INTERFACE_VERSION, ADMIN_IDS
+from db_config import DB_NAME
 
 # Вывод версий пакетов
 def print_versions():
@@ -50,6 +52,106 @@ check_and_create_tables()
 # Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+BACKUP_DIR = "backups"
+os.makedirs(BACKUP_DIR, exist_ok=True)
+
+# Функция для ограничения доступа только админам
+def admin_only(handler):
+    async def wrapper(message: Message):
+        if message.from_user.id not in ADMIN_IDS:
+            await message.answer("❌ У вас нет доступа к этой команде.")
+            return
+        return await handler(message)
+    return wrapper
+
+# Функция для получения последнего бэкапа
+def get_last_backup_path():
+    backups = sorted(Path(BACKUP_DIR).glob("db_*.db"), reverse=True)
+    return backups[0] if backups else None
+
+# Функция для создания бэкапа
+def create_backup_if_needed():
+    last_backup = get_last_backup_path()
+    now = datetime.datetime.now()
+    
+    if last_backup:
+        delta = now - datetime.datetime.strptime(last_backup.stem.split('_')[1], "%Y-%m-%d-%H-%M")
+        if delta.days < 7:
+            return last_backup  # Бэкап свежий
+    # Иначе создаём новый
+    date_str = now.strftime("%Y-%m-%d-%H-%M")
+    backup_path = Path(BACKUP_DIR) / f"db_{date_str}.db"
+    with open(DB_NAME, "rb") as src, open(backup_path, "wb") as dst:
+        dst.write(src.read())
+    return backup_path
+
+# Отправка последнего или нового бэкапа
+@dp.message(Command("backup"))
+@admin_only
+async def cmd_backup(message: types.Message):
+    path = create_backup_if_needed()
+    if path:
+        await message.answer_document(FSInputFile(path), caption="📦 Актуальный бэкап базы")
+    else:
+        await message.answer("❌ Бэкап не найден и не удалось создать.")
+
+# Экспорт таблицы в CSV
+@dp.message(Command("export_csv"))
+@admin_only
+async def cmd_export_csv(message: types.Message):
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM ad_pressure_measurements")
+        rows = cursor.fetchall()
+        headers = [desc[0] for desc in cursor.description]
+
+        csv_path = "backups/export.csv"
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(headers)
+            writer.writerows(rows)
+
+        await message.answer_document(FSInputFile(csv_path), caption="🗂 Экспорт в CSV завершён")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка при экспорте: {e}")
+    finally:
+        conn.close()
+
+# Последние записи пользователя
+
+@dp.message(Command("send_last_records"))
+@admin_only
+async def cmd_send_last_records(message: types.Message):
+    try:
+        user_id = message.from_user.id
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT systolic, diastolic, pulse, timestamp 
+            FROM ad_pressure_measurements 
+            WHERE user_id = ? 
+            ORDER BY timestamp DESC 
+            LIMIT 5
+        """, (user_id,))
+        records = cursor.fetchall()
+
+        if not records:
+            await message.answer("Нет записей давления для вас.")
+            return
+
+        text = "🩺 Последние 5 записей давления:\n"
+        for r in records:
+            text += f"{r[3]} — {r[0]}/{r[1]}, пульс: {r[2]}\n"
+
+        await message.answer(text)
+    except Exception as e:
+        await message.answer(f"❌ Ошибка при получении данных: {e}")
+    finally:
+        conn.close()
+
 
 # Класс для хранения состояния FSM
 class PressureStates(StatesGroup):
@@ -533,6 +635,11 @@ async def cmd_update(message: Message):
 
     # Отправляем подтверждение администратору
     await message.answer("✅ Версия интерфейса успешно обновлена, и уведомления отправлены всем пользователям.")        
+
+# Резервное копирование БД
+@dp.message(Command("backup"))
+async def cmd_backup(message: Message):
+    await message.answer_document(InputFile("database/database.db"), caption="📦 Резервная копия БД")
 
 
 # Выход
